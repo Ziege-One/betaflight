@@ -1,28 +1,25 @@
 /*
- * This file is part of Cleanflight and Betaflight.
+ * This file is part of Cleanflight.
  *
- * Cleanflight and Betaflight are free software. You can redistribute
- * this software and/or modify this software under the terms of the
- * GNU General Public License as published by the Free Software
- * Foundation, either version 3 of the License, or (at your option)
- * any later version.
+ * Cleanflight is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- * Cleanflight and Betaflight are distributed in the hope that they
- * will be useful, but WITHOUT ANY WARRANTY; without even the implied
- * warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details.
+ * Cleanflight is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this software.
- *
- * If not, see <http://www.gnu.org/licenses/>.
+ * along with Cleanflight.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdint.h>
 
-#include "platform.h"
+#include <platform.h>
 
 #include "build/debug.h"
 
@@ -44,13 +41,12 @@
 
 #include "fc/config.h"
 #include "fc/fc_core.h"
-#include "fc/fc_rc.h"
 #include "fc/fc_dispatch.h"
 #include "fc/fc_tasks.h"
 #include "fc/rc_controls.h"
 #include "fc/runtime_config.h"
 
-#include "flight/position.h"
+#include "flight/altitude.h"
 #include "flight/imu.h"
 #include "flight/mixer.h"
 #include "flight/pid.h"
@@ -73,8 +69,6 @@
 
 #include "msp/msp_serial.h"
 
-#include "pg/rx.h"
-
 #include "rx/rx.h"
 
 #include "sensors/acceleration.h"
@@ -84,23 +78,12 @@
 #include "sensors/compass.h"
 #include "sensors/esc_sensor.h"
 #include "sensors/gyro.h"
-#include "sensors/sensors.h"
 #include "sensors/rangefinder.h"
+#include "sensors/sensors.h"
 
 #include "scheduler/scheduler.h"
 
 #include "telemetry/telemetry.h"
-
-#ifdef USE_USB_CDC_HID
-//TODO: Make it platform independent in the future
-#ifdef STM32F4
-#include "vcpf4/usbd_cdc_vcp.h"
-#include "usbd_hid_core.h"
-#elif defined(STM32F7)
-#include "usbd_cdc_interface.h"
-#include "usbd_hid.h"
-#endif
-#endif
 
 #ifdef USE_BST
 void taskBstMasterProcess(timeUs_t currentTimeUs);
@@ -154,29 +137,27 @@ static void taskUpdateRxMain(timeUs_t currentTimeUs)
         return;
     }
 
-    static timeUs_t lastRxTimeUs;
-    currentRxRefreshRate = constrain(currentTimeUs - lastRxTimeUs, 1000, 20000);
-    lastRxTimeUs = currentTimeUs;
     isRXDataNew = true;
 
-#ifdef USE_USB_CDC_HID
-    if (!ARMING_FLAG(ARMED)) {
-        int8_t report[8];
-        for (int i = 0; i < 8; i++) {
-                report[i] = scaleRange(constrain(rcData[i], 1000, 2000), 1000, 2000, -127, 127);
-        }
-#ifdef STM32F4
-        USBD_HID_SendReport(&USB_OTG_dev, (uint8_t*)report, sizeof(report));
-#elif defined(STM32F7)
-        extern USBD_HandleTypeDef  USBD_Device;
-        USBD_HID_SendReport(&USBD_Device, (uint8_t*)report, sizeof(report));
+#if !defined(USE_ALT_HOLD)
+    // updateRcCommands sets rcCommand, which is needed by updateAltHoldState and updateSonarAltHoldState
+    updateRcCommands();
 #endif
+    updateArmingStatus();
+
+#ifdef USE_ALT_HOLD
+#ifdef USE_BARO
+    if (sensors(SENSOR_BARO)) {
+        updateAltHoldState();
     }
 #endif
 
-    // updateRcCommands sets rcCommand, which is needed by updateAltHoldState and updateSonarAltHoldState
-    updateRcCommands();
-    updateArmingStatus();
+#ifdef USE_RANGEFINDER
+    if (sensors(SENSOR_RANGEFINDER)) {
+        updateRangefinderAltHoldState();
+    }
+#endif
+#endif // USE_ALT_HOLD
 }
 #endif
 
@@ -194,16 +175,26 @@ static void taskUpdateBaro(timeUs_t currentTimeUs)
 }
 #endif
 
-#if defined(USE_BARO) || defined(USE_GPS)
+#if defined(USE_BARO) || defined(USE_RANGEFINDER)
 static void taskCalculateAltitude(timeUs_t currentTimeUs)
 {
-    calculateEstimatedAltitude(currentTimeUs);
-}
-#endif // USE_BARO || USE_GPS
+    if (false
+#if defined(USE_BARO)
+        || (sensors(SENSOR_BARO) && isBaroReady())
+#endif
+#if defined(USE_RANGEFINDER)
+        || sensors(SENSOR_RANGEFINDER)
+#endif
+        ) {
+        calculateEstimatedAltitude(currentTimeUs);
+    }}
+#endif // USE_BARO || USE_RANGEFINDER
 
 #ifdef USE_TELEMETRY
 static void taskTelemetry(timeUs_t currentTimeUs)
 {
+    telemetryCheckState();
+
     if (!cliMode && feature(FEATURE_TELEMETRY)) {
         telemetryProcess(currentTimeUs);
     }
@@ -264,7 +255,7 @@ void fcTasksInit(void)
 
     setTaskEnabled(TASK_DISPATCH, dispatchIsEnabled());
 
-#ifdef USE_BEEPER
+#ifdef BEEPER
     setTaskEnabled(TASK_BEEPER, true);
 #endif
 #ifdef USE_GPS
@@ -276,8 +267,11 @@ void fcTasksInit(void)
 #ifdef USE_BARO
     setTaskEnabled(TASK_BARO, sensors(SENSOR_BARO));
 #endif
-#if defined(USE_BARO) || defined(USE_GPS)
-    setTaskEnabled(TASK_ALTITUDE, sensors(SENSOR_BARO) || sensors(SENSOR_GPS));
+#ifdef USE_RANGEFINDER
+    setTaskEnabled(TASK_RANGEFINDER, sensors(SENSOR_RANGEFINDER));
+#endif
+#if defined(USE_BARO) || defined(USE_RANGEFINDER)
+    setTaskEnabled(TASK_ALTITUDE, sensors(SENSOR_BARO) || sensors(SENSOR_RANGEFINDER));
 #endif
 #ifdef USE_DASHBOARD
     setTaskEnabled(TASK_DASHBOARD, feature(FEATURE_DASHBOARD));
@@ -291,6 +285,12 @@ void fcTasksInit(void)
         } else if (rxConfig()->serialrx_provider == SERIALRX_CRSF) {
             // Reschedule telemetry to 500hz, 2ms for CRSF
             rescheduleTask(TASK_TELEMETRY, TASK_PERIOD_HZ(500));
+        } else if (rxConfig()->serialrx_provider == SERIALRX_SUMD) {
+            // Reschedule telemetry to 1000hz, 1ms for Graupner
+            rescheduleTask(TASK_TELEMETRY, TASK_PERIOD_HZ(1000));
+        } else if (rxConfig()->serialrx_provider == SERIALRX_SUMH) {
+            // Reschedule telemetry to 1000hz, 1ms for Graupner
+            rescheduleTask(TASK_TELEMETRY, TASK_PERIOD_HZ(1000));
         }
     }
 #endif
@@ -443,7 +443,7 @@ cfTask_t cfTasks[TASK_COUNT] = {
         .staticPriority = TASK_PRIORITY_HIGH,
     },
 
-#ifdef USE_BEEPER
+#ifdef BEEPER
     [TASK_BEEPER] = {
         .taskName = "BEEPER",
         .taskFunc = beeperUpdate,
@@ -479,7 +479,16 @@ cfTask_t cfTasks[TASK_COUNT] = {
     },
 #endif
 
-#if defined(USE_BARO) || defined(USE_GPS)
+#ifdef USE_RANGEFINDER
+    [TASK_RANGEFINDER] = {
+        .taskName = "RANGEFINDER",
+        .taskFunc = rangefinderUpdate,
+        .desiredPeriod = TASK_PERIOD_MS(70), // XXX HCSR04 sonar specific value.
+        .staticPriority = TASK_PRIORITY_LOW,
+    },
+#endif
+
+#if defined(USE_BARO) || defined(USE_RANGEFINDER)
     [TASK_ALTITUDE] = {
         .taskName = "ALTITUDE",
         .taskFunc = taskCalculateAltitude,
