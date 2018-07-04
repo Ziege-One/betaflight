@@ -62,6 +62,7 @@
 #include "drivers/transponder_ir.h"
 #include "drivers/camera_control.h"
 
+#include "fc/board_info.h"
 #include "fc/config.h"
 #include "fc/controlrate_profile.h"
 #include "fc/fc_core.h"
@@ -101,6 +102,7 @@
 
 #include "msp/msp_serial.h"
 
+#include "pg/board.h"
 #include "pg/vcd.h"
 
 #include "rx/rx.h"
@@ -457,6 +459,24 @@ static bool mspCommonProcessOutCommand(uint8_t cmdMSP, sbuf_t *dst, mspPostProce
         // Target name with explicit length
         sbufWriteU8(dst, strlen(targetName));
         sbufWriteData(dst, targetName, strlen(targetName));
+
+#if defined(USE_BOARD_INFO)
+        // Board name with explicit length
+        char *value = getBoardName();
+        sbufWriteU8(dst, strlen(value));
+        sbufWriteString(dst, value);
+
+        // Manufacturer id with explicit length
+        value = getManufacturerId();
+        sbufWriteU8(dst, strlen(value));
+        sbufWriteString(dst, value);
+
+#if defined(USE_SIGNATURE)
+        // Signature
+        sbufWriteData(dst, getSignature(), SIGNATURE_LENGTH);
+#endif
+#endif // USE_BOARD_INFO
+
         break;
     }
 
@@ -504,8 +524,9 @@ static bool mspCommonProcessOutCommand(uint8_t cmdMSP, sbuf_t *dst, mspPostProce
 
 #ifdef USE_BEEPER
     case MSP_BEEPER_CONFIG:
-        sbufWriteU32(dst, getBeeperOffMask());
+        sbufWriteU32(dst, beeperConfig()->beeper_off_flags);
         sbufWriteU8(dst, beeperConfig()->dshotBeaconTone);
+        sbufWriteU32(dst, beeperConfig()->dshotBeaconOffFlags);
         break;
 #endif
 
@@ -1012,7 +1033,7 @@ static bool mspProcessOutCommand(uint8_t cmdMSP, sbuf_t *dst)
         sbufWriteU8(dst, gpsSol.numSat);
         sbufWriteU32(dst, gpsSol.llh.lat);
         sbufWriteU32(dst, gpsSol.llh.lon);
-        sbufWriteU16(dst, gpsSol.llh.alt);
+        sbufWriteU16(dst, (uint16_t)constrain(gpsSol.llh.alt / 100, 0, UINT16_MAX)); // alt changed from 1m to 0.01m per lsb since MSP API 1.39 by RTH. To maintain backwards compatibility compensate to 1m per lsb in MSP again.
         sbufWriteU16(dst, gpsSol.groundSpeed);
         sbufWriteU16(dst, gpsSol.groundCourse);
         break;
@@ -1071,7 +1092,7 @@ static bool mspProcessOutCommand(uint8_t cmdMSP, sbuf_t *dst)
         sbufWriteU8(dst, failsafeConfig()->failsafe_delay);
         sbufWriteU8(dst, failsafeConfig()->failsafe_off_delay);
         sbufWriteU16(dst, failsafeConfig()->failsafe_throttle);
-        sbufWriteU8(dst, failsafeConfig()->failsafe_kill_switch);
+        sbufWriteU8(dst, failsafeConfig()->failsafe_switch_mode);
         sbufWriteU16(dst, failsafeConfig()->failsafe_throttle_low_delay);
         sbufWriteU8(dst, failsafeConfig()->failsafe_procedure);
         break;
@@ -1210,8 +1231,14 @@ static bool mspProcessOutCommand(uint8_t cmdMSP, sbuf_t *dst)
         sbufWriteU16(dst, motorConfig()->digitalIdleOffsetValue);
         sbufWriteU8(dst, gyroConfig()->gyro_use_32khz);
         sbufWriteU8(dst, motorConfig()->dev.motorPwmInversion);
-        break;
+        sbufWriteU8(dst, gyroConfig()->gyro_to_use);
+        sbufWriteU8(dst, gyroConfig()->gyro_high_fsr);
+        sbufWriteU8(dst, gyroConfig()->gyroMovementCalibrationThreshold);
+        sbufWriteU16(dst, gyroConfig()->gyroCalibrationDuration);
+        sbufWriteU16(dst, gyroConfig()->gyro_offset_yaw);
+        sbufWriteU8(dst, gyroConfig()->checkOverflow);
 
+        break;
     case MSP_FILTER_CONFIG :
         sbufWriteU8(dst, gyroConfig()->gyro_lowpass_hz);
         sbufWriteU16(dst, currentPidProfile->dterm_lowpass_hz);
@@ -1223,8 +1250,15 @@ static bool mspProcessOutCommand(uint8_t cmdMSP, sbuf_t *dst)
         sbufWriteU16(dst, gyroConfig()->gyro_soft_notch_hz_2);
         sbufWriteU16(dst, gyroConfig()->gyro_soft_notch_cutoff_2);
         sbufWriteU8(dst, currentPidProfile->dterm_filter_type);
-        break;
+        sbufWriteU8(dst, gyroConfig()->gyro_hardware_lpf);
+        sbufWriteU8(dst, gyroConfig()->gyro_32khz_hardware_lpf);
+        sbufWriteU16(dst, gyroConfig()->gyro_lowpass_hz);
+        sbufWriteU16(dst, gyroConfig()->gyro_lowpass2_hz);
+        sbufWriteU8(dst, gyroConfig()->gyro_lowpass_type);
+        sbufWriteU8(dst, gyroConfig()->gyro_lowpass2_type);
+        sbufWriteU16(dst, currentPidProfile->dterm_lowpass2_hz);
 
+        break;
     case MSP_PID_ADVANCED:
         sbufWriteU16(dst, 0);
         sbufWriteU16(dst, 0);
@@ -1651,13 +1685,21 @@ static mspResult_e mspProcessInCommand(uint8_t cmdMSP, sbuf_t *src)
         if (sbufBytesRemaining(src)) {
             gyroConfigMutable()->gyro_use_32khz = sbufReadU8(src);
         }
-        validateAndFixGyroConfig();
-
         if (sbufBytesRemaining(src)) {
             motorConfigMutable()->dev.motorPwmInversion = sbufReadU8(src);
         }
-        break;
+        if (sbufBytesRemaining(src) >= 8) {
+            gyroConfigMutable()->gyro_to_use = sbufReadU8(src);
+            gyroConfigMutable()->gyro_high_fsr = sbufReadU8(src);
+            gyroConfigMutable()->gyroMovementCalibrationThreshold = sbufReadU8(src);
+            gyroConfigMutable()->gyroCalibrationDuration = sbufReadU16(src);
+            gyroConfigMutable()->gyro_offset_yaw = sbufReadU16(src);
+            gyroConfigMutable()->checkOverflow = sbufReadU8(src);
+        }
 
+        validateAndFixGyroConfig();
+
+        break;
     case MSP_SET_FILTER_CONFIG:
         gyroConfigMutable()->gyro_lowpass_hz = sbufReadU8(src);
         currentPidProfile->dterm_lowpass_hz = sbufReadU16(src);
@@ -1675,13 +1717,22 @@ static mspResult_e mspProcessInCommand(uint8_t cmdMSP, sbuf_t *src)
         if (sbufBytesRemaining(src) >= 1) {
             currentPidProfile->dterm_filter_type = sbufReadU8(src);
         }
+        if (sbufBytesRemaining(src) >= 10) {
+            gyroConfigMutable()->gyro_hardware_lpf = sbufReadU8(src);
+            gyroConfigMutable()->gyro_32khz_hardware_lpf = sbufReadU8(src);
+            gyroConfigMutable()->gyro_lowpass_hz = sbufReadU16(src);
+            gyroConfigMutable()->gyro_lowpass2_hz = sbufReadU16(src);
+            gyroConfigMutable()->gyro_lowpass_type = sbufReadU8(src);
+            gyroConfigMutable()->gyro_lowpass2_type = sbufReadU8(src);
+            currentPidProfile->dterm_lowpass2_hz = sbufReadU16(src);
+        }
         // reinitialize the gyro filters with the new values
         validateAndFixGyroConfig();
         gyroInitFilters();
         // reinitialize the PID filters with the new values
         pidInitFilters(currentPidProfile);
-        break;
 
+        break;
     case MSP_SET_PID_ADVANCED:
         sbufReadU16(src);
         sbufReadU16(src);
@@ -1848,7 +1899,7 @@ static mspResult_e mspProcessInCommand(uint8_t cmdMSP, sbuf_t *src)
         gpsSol.numSat = sbufReadU8(src);
         gpsSol.llh.lat = sbufReadU32(src);
         gpsSol.llh.lon = sbufReadU32(src);
-        gpsSol.llh.alt = sbufReadU16(src);
+        gpsSol.llh.alt = sbufReadU16(src) * 100; // alt changed from 1m to 0.01m per lsb since MSP API 1.39 by RTH. Received MSP altitudes in 1m per lsb have to upscaled.
         gpsSol.groundSpeed = sbufReadU16(src);
         GPS_update |= 2;        // New data signalisation to GPS functions // FIXME Magic Numbers
         break;
@@ -1860,10 +1911,12 @@ static mspResult_e mspProcessInCommand(uint8_t cmdMSP, sbuf_t *src)
 
 #ifdef USE_BEEPER
     case MSP_SET_BEEPER_CONFIG:
-        beeperOffClearAll();
-        setBeeperOffMask(sbufReadU32(src));
+        beeperConfigMutable()->beeper_off_flags = sbufReadU32(src);
         if (sbufBytesRemaining(src) >= 1) {
             beeperConfigMutable()->dshotBeaconTone = sbufReadU8(src);
+        }
+        if (sbufBytesRemaining(src) >= 4) {
+            beeperConfigMutable()->dshotBeaconOffFlags = sbufReadU32(src);
         }
         break;
 #endif
@@ -1920,7 +1973,7 @@ static mspResult_e mspProcessInCommand(uint8_t cmdMSP, sbuf_t *src)
         failsafeConfigMutable()->failsafe_delay = sbufReadU8(src);
         failsafeConfigMutable()->failsafe_off_delay = sbufReadU8(src);
         failsafeConfigMutable()->failsafe_throttle = sbufReadU16(src);
-        failsafeConfigMutable()->failsafe_kill_switch = sbufReadU8(src);
+        failsafeConfigMutable()->failsafe_switch_mode = sbufReadU8(src);
         failsafeConfigMutable()->failsafe_throttle_low_delay = sbufReadU16(src);
         failsafeConfigMutable()->failsafe_procedure = sbufReadU8(src);
         break;
@@ -2054,6 +2107,47 @@ static mspResult_e mspProcessInCommand(uint8_t cmdMSP, sbuf_t *src)
         setRssiMsp(sbufReadU8(src));
 
         break;
+
+#if defined(USE_BOARD_INFO)
+    case MSP_SET_BOARD_INFO:
+        if (!boardInformationIsSet()) {
+            uint8_t length = sbufReadU8(src);
+            char boardName[MAX_BOARD_NAME_LENGTH + 1];
+            sbufReadData(src, boardName, MIN(length, MAX_BOARD_NAME_LENGTH));
+            if (length > MAX_BOARD_NAME_LENGTH) {
+                sbufAdvance(src, length - MAX_BOARD_NAME_LENGTH);
+            }
+            boardName[length] = '\0';
+            length = sbufReadU8(src);
+            char manufacturerId[MAX_MANUFACTURER_ID_LENGTH + 1];
+            sbufReadData(src, manufacturerId, MIN(length, MAX_MANUFACTURER_ID_LENGTH));
+            if (length > MAX_MANUFACTURER_ID_LENGTH) {
+                sbufAdvance(src, length - MAX_MANUFACTURER_ID_LENGTH);
+            }
+            manufacturerId[length] = '\0';
+
+            setBoardName(boardName);
+            setManufacturerId(manufacturerId);
+            persistBoardInformation();
+        } else {
+            return MSP_RESULT_ERROR;
+        }
+
+        break;
+#if defined(USE_SIGNATURE)
+    case MSP_SET_SIGNATURE:
+        if (!signatureIsSet()) {
+            uint8_t signature[SIGNATURE_LENGTH];
+            sbufReadData(src, signature, SIGNATURE_LENGTH);
+            setSignature(signature);
+            persistSignature();
+        } else {
+            return MSP_RESULT_ERROR;
+        }
+
+        break;
+#endif
+#endif // USE_BOARD_INFO
     default:
         // we do not know how to handle the (valid) message, indicate error MSP $M!
         return MSP_RESULT_ERROR;

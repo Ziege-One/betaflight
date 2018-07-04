@@ -149,13 +149,8 @@ enum
 
 static uint16_t frSkyDataIdTable[MAX_DATAIDS];
 
-// number of sensors to send before taking a rest
-// seems to improve throughput and prevents "sensor lost" issue (oversaturation of send queue???)
-#define SENSOR_REST_PERIOD 3
-
 #ifdef USE_ESC_SENSOR
 // number of sensors to send between sending the ESC sensors
-// must be greater than and not a multiple of SENSOR_REST_PERIOD
 #define ESC_SENSOR_PERIOD 7
 
 static uint16_t frSkyEscDataIdTable[] = {
@@ -291,6 +286,12 @@ void smartPortSendByte(uint8_t c, uint16_t *checksum, serialPort_t *port)
     }
 }
 
+bool smartPortPayloadContainsMSP(const smartPortPayload_t *payload)
+{
+    return payload->frameId == FSSP_MSPC_FRAME_SMARTPORT || payload->frameId == FSSP_MSPC_FRAME_FPORT;
+}
+
+
 void smartPortWriteFrameSerial(const smartPortPayload_t *payload, serialPort_t *port, uint16_t checksum)
 {
     uint8_t *data = (uint8_t *)payload;
@@ -360,7 +361,7 @@ static void initSmartPortSensors(void)
     }
 
 #ifdef USE_GPS
-    if (sensors(SENSOR_GPS)) {
+    if (feature(FEATURE_GPS)) {
         ADD_SENSOR(FSSP_DATAID_SPEED);
         ADD_SENSOR(FSSP_DATAID_LATLONG);
         ADD_SENSOR(FSSP_DATAID_LATLONG); // twice (one for lat, one for long)
@@ -463,18 +464,15 @@ void processSmartPortTelemetry(smartPortPayload_t *payload, volatile bool *clear
     static uint8_t smartPortIdOffset = 0;
 #endif
 
-    if (payload) {
-        // do not check the physical ID here again
-        // unless we start receiving other sensors' packets
-
 #if defined(USE_MSP_OVER_TELEMETRY)
-        if (payload->frameId == FSSP_MSPC_FRAME_SMARTPORT || payload->frameId == FSSP_MSPC_FRAME_FPORT) {
-            // Pass only the payload: skip frameId
-            uint8_t *frameStart = (uint8_t *)&payload->valueId;
-            smartPortMspReplyPending = handleMspFrame(frameStart, SMARTPORT_MSP_PAYLOAD_SIZE);
-        }
-#endif
+    if (payload && smartPortPayloadContainsMSP(payload)) {
+        // Do not check the physical ID here again
+        // unless we start receiving other sensors' packets
+        // Pass only the payload: skip frameId
+         uint8_t *frameStart = (uint8_t *)&payload->valueId;
+         smartPortMspReplyPending = handleMspFrame(frameStart, SMARTPORT_MSP_PAYLOAD_SIZE);
     }
+#endif
 
     bool doRun = true;
     while (doRun && *clearToSend) {
@@ -500,11 +498,6 @@ void processSmartPortTelemetry(smartPortPayload_t *payload, volatile bool *clear
 
         // we can send back any data we want, our tables keep track of the order and frequency of each data type we send
         frSkyTableInfo_t * tableInfo = &frSkyDataIdTableInfo;
-
-        if (smartPortIdCycleCnt % SENSOR_REST_PERIOD == 0) {
-            smartPortIdCycleCnt++;
-            return;
-        }
 
 #ifdef USE_ESC_SENSOR
         if (smartPortIdCycleCnt >= ESC_SENSOR_PERIOD) {
@@ -710,16 +703,17 @@ void processSmartPortTelemetry(smartPortPayload_t *payload, volatile bool *clear
                 *clearToSend = false;
                 break;
             case FSSP_DATAID_T2         :
-                if (sensors(SENSOR_GPS)) {
 #ifdef USE_GPS
+                if (sensors(SENSOR_GPS)) {
                     // provide GPS lock status
                     smartPortSendPackage(id, (STATE(GPS_FIX) ? 1000 : 0) + (STATE(GPS_FIX_HOME) ? 2000 : 0) + gpsSol.numSat);
                     *clearToSend = false;
-#endif
                 } else if (feature(FEATURE_GPS)) {
                     smartPortSendPackage(id, 0);
                     *clearToSend = false;
-                } else if (telemetryConfig()->pidValuesAsTelemetry) {
+                } else
+#endif
+                if (telemetryConfig()->pidValuesAsTelemetry) {
                     switch (t2Cnt) {
                         case 0:
                             tmp2 = currentPidProfile->pid[PID_ROLL].P;

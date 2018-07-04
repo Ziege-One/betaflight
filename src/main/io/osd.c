@@ -167,6 +167,39 @@ static const char compassBar[] = {
   SYM_HEADING_LINE, SYM_HEADING_DIVIDED_LINE, SYM_HEADING_LINE
 };
 
+static const uint8_t osdElementDisplayOrder[] = {
+    OSD_MAIN_BATT_VOLTAGE,
+    OSD_RSSI_VALUE,
+    OSD_CROSSHAIRS,
+    OSD_HORIZON_SIDEBARS,
+    OSD_ITEM_TIMER_1,
+    OSD_ITEM_TIMER_2,
+    OSD_REMAINING_TIME_ESTIMATE,
+    OSD_FLYMODE,
+    OSD_THROTTLE_POS,
+    OSD_VTX_CHANNEL,
+    OSD_CURRENT_DRAW,
+    OSD_MAH_DRAWN,
+    OSD_CRAFT_NAME,
+    OSD_ALTITUDE,
+    OSD_ROLL_PIDS,
+    OSD_PITCH_PIDS,
+    OSD_YAW_PIDS,
+    OSD_POWER,
+    OSD_PIDRATE_PROFILE,
+    OSD_WARNINGS,
+    OSD_AVG_CELL_VOLTAGE,
+    OSD_DEBUG,
+    OSD_PITCH_ANGLE,
+    OSD_ROLL_ANGLE,
+    OSD_MAIN_BATT_USAGE,
+    OSD_DISARMED,
+    OSD_NUMERICAL_HEADING,
+    OSD_NUMERICAL_VARIO,
+    OSD_COMPASS_BAR,
+    OSD_ANTI_GRAVITY
+};
+
 PG_REGISTER_WITH_RESET_FN(osdConfig_t, osdConfig, PG_OSD_CONFIG, 3);
 
 /**
@@ -237,14 +270,13 @@ static char osdGetTemperatureSymbolForSelectedUnit(void)
 }
 #endif
 
-static void osdFormatAltitudeString(char * buff, int altitude, bool pad)
+static void osdFormatAltitudeString(char * buff, int altitude)
 {
-    const int alt = osdGetMetersToSelectedUnit(altitude);
-    int altitudeIntergerPart = abs(alt / 100);
-    if (alt < 0) {
-        altitudeIntergerPart *= -1;
-    }
-    tfp_sprintf(buff, pad ? "%4d.%01d%c" : "%d.%01d%c", altitudeIntergerPart, abs((alt % 100) / 10), osdGetMetersToSelectedUnitSymbol());
+    const int alt = osdGetMetersToSelectedUnit(altitude) / 10;
+
+    tfp_sprintf(buff, "%5d %c", alt, osdGetMetersToSelectedUnitSymbol());
+    buff[5] = buff[4];
+    buff[4] = '.';
 }
 
 static void osdFormatPID(char * buff, const char * label, const pid8_t * pid)
@@ -518,7 +550,7 @@ static bool osdDrawSingleElement(uint8_t item)
         break;
 
     case OSD_ALTITUDE:
-        osdFormatAltitudeString(buff, getEstimatedAltitude(), true);
+        osdFormatAltitudeString(buff, getEstimatedAltitude());
         break;
 
     case OSD_ITEM_TIMER_1:
@@ -684,6 +716,23 @@ static bool osdDrawSingleElement(uint8_t item)
             STATIC_ASSERT(OSD_FORMAT_MESSAGE_BUFFER_SIZE <= sizeof(buff), osd_warnings_size_exceeds_buffer_size);
 
             const batteryState_e batteryState = getBatteryState();
+
+#ifdef USE_DSHOT
+            if (isTryingToArm() && !ARMING_FLAG(ARMED)) {
+                int armingDelayTime = (getLastDshotBeaconCommandTimeUs() + DSHOT_BEACON_GUARD_DELAY_US - micros()) / 1e5;
+                if (armingDelayTime < 0) {
+                    armingDelayTime = 0;
+                }
+                if (armingDelayTime >= (DSHOT_BEACON_GUARD_DELAY_US / 1e5 - 5)) {
+                    osdFormatMessage(buff, OSD_FORMAT_MESSAGE_BUFFER_SIZE, " BEACON ON"); // Display this message for the first 0.5 seconds
+                } else {
+                    char armingDelayMessage[OSD_FORMAT_MESSAGE_BUFFER_SIZE];
+                    tfp_sprintf(armingDelayMessage, "ARM IN %d.%d", armingDelayTime / 10, armingDelayTime % 10);
+                    osdFormatMessage(buff, OSD_FORMAT_MESSAGE_BUFFER_SIZE, armingDelayMessage);
+                }
+                break;
+            }
+#endif
 
             if (osdWarnGetState(OSD_WARNING_BATTERY_CRITICAL) && batteryState == BATTERY_CRITICAL) {
                 osdFormatMessage(buff, OSD_FORMAT_MESSAGE_BUFFER_SIZE, " LAND NOW");
@@ -916,36 +965,10 @@ static void osdDrawElements(void)
         osdDrawSingleElement(OSD_ARTIFICIAL_HORIZON);
     }
 
-    osdDrawSingleElement(OSD_MAIN_BATT_VOLTAGE);
-    osdDrawSingleElement(OSD_RSSI_VALUE);
-    osdDrawSingleElement(OSD_CROSSHAIRS);
-    osdDrawSingleElement(OSD_HORIZON_SIDEBARS);
-    osdDrawSingleElement(OSD_ITEM_TIMER_1);
-    osdDrawSingleElement(OSD_ITEM_TIMER_2);
-    osdDrawSingleElement(OSD_REMAINING_TIME_ESTIMATE);
-    osdDrawSingleElement(OSD_FLYMODE);
-    osdDrawSingleElement(OSD_THROTTLE_POS);
-    osdDrawSingleElement(OSD_VTX_CHANNEL);
-    osdDrawSingleElement(OSD_CURRENT_DRAW);
-    osdDrawSingleElement(OSD_MAH_DRAWN);
-    osdDrawSingleElement(OSD_CRAFT_NAME);
-    osdDrawSingleElement(OSD_ALTITUDE);
-    osdDrawSingleElement(OSD_ROLL_PIDS);
-    osdDrawSingleElement(OSD_PITCH_PIDS);
-    osdDrawSingleElement(OSD_YAW_PIDS);
-    osdDrawSingleElement(OSD_POWER);
-    osdDrawSingleElement(OSD_PIDRATE_PROFILE);
-    osdDrawSingleElement(OSD_WARNINGS);
-    osdDrawSingleElement(OSD_AVG_CELL_VOLTAGE);
-    osdDrawSingleElement(OSD_DEBUG);
-    osdDrawSingleElement(OSD_PITCH_ANGLE);
-    osdDrawSingleElement(OSD_ROLL_ANGLE);
-    osdDrawSingleElement(OSD_MAIN_BATT_USAGE);
-    osdDrawSingleElement(OSD_DISARMED);
-    osdDrawSingleElement(OSD_NUMERICAL_HEADING);
-    osdDrawSingleElement(OSD_NUMERICAL_VARIO);
-    osdDrawSingleElement(OSD_COMPASS_BAR);
-    osdDrawSingleElement(OSD_ANTI_GRAVITY);
+
+    for (unsigned i = 0; i < sizeof(osdElementDisplayOrder); i++) {
+        osdDrawSingleElement(osdElementDisplayOrder[i]);
+    }
 
 #ifdef USE_GPS
     if (sensors(SENSOR_GPS)) {
@@ -1086,18 +1109,28 @@ void osdUpdateAlarms(void)
 
     int32_t alt = osdGetMetersToSelectedUnit(getEstimatedAltitude()) / 100;
 
-    if (scaleRange(getRssi(), 0, 1024, 0, 100) < osdConfig()->rssi_alarm) {
+    if (getRssiPercent() < osdConfig()->rssi_alarm) {
         SET_BLINK(OSD_RSSI_VALUE);
     } else {
         CLR_BLINK(OSD_RSSI_VALUE);
     }
 
-    if (getBatteryState() == BATTERY_OK) {
+    // Determine if the OSD_WARNINGS should blink
+    if (getBatteryState() != BATTERY_OK
+           && (osdWarnGetState(OSD_WARNING_BATTERY_CRITICAL) || osdWarnGetState(OSD_WARNING_BATTERY_WARNING))
+#ifdef USE_DSHOT
+           && (!isTryingToArm())
+#endif
+       ) {
+        SET_BLINK(OSD_WARNINGS);
+    } else {
         CLR_BLINK(OSD_WARNINGS);
+    }
+
+    if (getBatteryState() == BATTERY_OK) {
         CLR_BLINK(OSD_MAIN_BATT_VOLTAGE);
         CLR_BLINK(OSD_AVG_CELL_VOLTAGE);
     } else {
-        SET_BLINK(OSD_WARNINGS);
         SET_BLINK(OSD_MAIN_BATT_VOLTAGE);
         SET_BLINK(OSD_AVG_CELL_VOLTAGE);
     }
@@ -1168,7 +1201,6 @@ static void osdResetStats(void)
     stats.max_current  = 0;
     stats.max_speed    = 0;
     stats.min_voltage  = 500;
-    stats.max_current  = 0;
     stats.min_rssi     = 99;
     stats.max_altitude = 0;
     stats.max_distance = 0;
@@ -1202,7 +1234,7 @@ static void osdUpdateStats(void)
         stats.max_current = value;
     }
 
-    value = scaleRange(getRssi(), 0, 1024, 0, 100);
+    value = getRssiPercent();
     if (stats.min_rssi > value) {
         stats.min_rssi = value;
     }
@@ -1243,7 +1275,7 @@ static void osdGetBlackboxStatusString(char * buff)
 
 #ifdef USE_FLASHFS
     case BLACKBOX_DEVICE_FLASH:
-        storageDeviceIsWorking = flashfsIsReady();
+        storageDeviceIsWorking = flashfsIsSupported();
         if (storageDeviceIsWorking) {
             const flashGeometry_t *geometry = flashfsGetGeometry();
             storageTotal = geometry->totalSize / 1024;
@@ -1363,7 +1395,7 @@ static void osdShowStats(uint16_t endBatteryVoltage)
     }
 
     if (osdStatGetState(OSD_STAT_MAX_ALTITUDE)) {
-        osdFormatAltitudeString(buff, stats.max_altitude, false);
+        osdFormatAltitudeString(buff, stats.max_altitude);
         osdDisplayStatisticLabel(top++, "MAX ALTITUDE", buff);
     }
 

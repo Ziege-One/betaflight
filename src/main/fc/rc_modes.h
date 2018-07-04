@@ -80,6 +80,7 @@ typedef enum {
     BOXUSER3,
     BOXUSER4,
     BOXPIDAUDIO,
+    BOXACROTRAINER,
     CHECKBOX_ITEM_COUNT
 } boxId_e;
 
@@ -136,3 +137,4 @@ bool isAntiGravityModeActive(void);
 bool isRangeActive(uint8_t auxChannelIndex, const channelRange_t *range);
 void updateActivatedModes(void);
 bool isModeActivationConditionPresent(boxId_e modeId);
+void removeModeActivationCondition(boxId_e modeId);

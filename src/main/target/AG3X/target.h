@@ -32,6 +32,8 @@
 #define USBD_PRODUCT_STRING "Asgard32 F7"
 #endif
 
+#define ENABLE_DSHOT_DMAR       true
+
 // Note, beeper is on the LED pin
 #define LED0_PIN                PC13
 
@@ -64,7 +66,6 @@
 #define BMP280_SPI_INSTANCE     SPI2
 #define BMP280_CS_PIN           PB9
 
-#define USE_OSD
 #define USE_MAX7456
 #define MAX7456_SPI_INSTANCE    SPI3
 #define MAX7456_SPI_CS_PIN      PA15
